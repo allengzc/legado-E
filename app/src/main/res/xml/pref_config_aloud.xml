@@ -54,6 +54,31 @@
             android:key="appTtsEngine"
             app:iconSpaceReserved="false" />
 
+        <io.legado.app.lib.prefs.SwitchPreference
+            android:defaultValue="false"
+            android:title="分角色朗读（MiMo）"
+            android:summary="按旁白/角色分别配音，并按情绪调整语气。首次朗读会先标注本章（约几分钱），之后走缓存。"
+            android:key="ttsRoleplayEnabled"
+            app:iconSpaceReserved="false" />
+
+        <io.legado.app.lib.prefs.EditTextPreference
+            android:title="MiMo 接口地址"
+            android:key="ttsMimoBaseUrl"
+            android:dependency="ttsRoleplayEnabled"
+            app:iconSpaceReserved="false" />
+
+        <io.legado.app.lib.prefs.EditTextPreference
+            android:title="MiMo API Key"
+            android:key="ttsMimoApiKey"
+            android:dependency="ttsRoleplayEnabled"
+            app:iconSpaceReserved="false" />
+
+        <io.legado.app.lib.prefs.EditTextPreference
+            android:title="MiMo 语音模型"
+            android:key="ttsMimoModel"
+            android:dependency="ttsRoleplayEnabled"
+            app:iconSpaceReserved="false" />
+
         <io.legado.app.lib.prefs.Preference
             android:title="@string/sys_tts_config"
             android:summary="@string/sys_tts_config_summary"

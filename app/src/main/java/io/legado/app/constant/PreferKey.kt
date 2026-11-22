@@ -38,6 +38,17 @@ object PreferKey {
     const val ttsEngine = "appTtsEngine"
     const val ttsFollowSys = "ttsFollowSys"
     const val ttsSpeechRate = "ttsSpeechRate"
+
+    /** MiMo 分角色朗读：总开关 */
+    const val ttsRoleplayEnabled = "ttsRoleplayEnabled"
+
+    /** MiMo 接口地址（与 LLM 中转同域，默认沿用 ENW 的 v1） */
+    const val ttsMimoBaseUrl = "ttsMimoBaseUrl"
+    const val ttsMimoApiKey = "ttsMimoApiKey"
+    const val ttsMimoModel = "ttsMimoModel"
+
+    /** 角色映射 JSON：[{name,gender,role,timbre,personality,voice}] */
+    const val ttsRoleMap = "ttsRoleMap"
     const val prevKeys = "prevKeyCodes"
     const val nextKeys = "nextKeyCodes"
     const val showDiscovery = "showDiscovery"

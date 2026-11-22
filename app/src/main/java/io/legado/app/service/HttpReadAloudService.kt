@@ -34,6 +34,14 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.InputStreamDataSource
 import io.legado.app.help.http.okHttpClient
+import io.legado.app.help.tts.ChapterLabeler
+import io.legado.app.help.tts.ChapterSpeaker
+import io.legado.app.help.tts.MiMoTtsClient
+import io.legado.app.help.tts.MiMoVoices
+import io.legado.app.help.tts.RoleStore
+import io.legado.app.help.tts.Segmenter
+import io.legado.app.help.tts.TtsRole
+import io.legado.app.help.tts.TtsStyle
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.model.analyzeRule.AnalyzeUrl
@@ -119,12 +127,98 @@ class HttpReadAloudService : BaseReadAloudService(),
             ReadBook.readAloud()
         } else {
             super.play()
-            if (AppConfig.streamReadAloudAudio) {
+            if (AppConfig.ttsRoleplayEnabled) {
+                playWithRoleplay()
+            } else if (AppConfig.streamReadAloudAudio) {
                 downloadAndPlayAudiosStream()
             } else {
                 downloadAndPlayAudios()
             }
         }
+    }
+
+    // ---------------------------------------------------------------
+    // 分角色朗读（MiMo）
+    // ---------------------------------------------------------------
+
+    /**
+     * 分角色朗读。
+     *
+     * 与原来的 [downloadAndPlayAudios] 有两点根本不同：
+     *  1. 朗读单元是**句子**而不是段落——一段里可能同时有旁白、对白、心声，
+     *     整段交给一把嗓子就只能念成一个调；
+     *  2. 每一句按角色选音色、按情绪给风格，走 MiMo 的 chat completion 接口。
+     *
+     * 标注是花钱的，所以整章的分角色稿会落盘缓存；同一章重开 0 token。
+     */
+    private fun playWithRoleplay() {
+        exoPlayer.clearMediaItems()
+        downloadTask?.cancel()
+        downloadTask = execute {
+            downloadTaskActiveLock.withLock {
+                ensureActive()
+                val tts = MiMoTtsClient(
+                    AppConfig.ttsMimoBaseUrl,
+                    AppConfig.ttsMimoApiKey,
+                    AppConfig.ttsMimoModel
+                )
+                val textChapter = textChapter ?: return@withLock
+                val chapterText = contentList.joinToString("\n")
+                val roster = RoleStore.load(ReadBook.book?.variable)
+                val cacheFile = ChapterSpeaker.file(cacheDir, chapterText, roster)
+
+                val speaker = ChapterSpeaker.load(cacheFile) ?: run {
+                    val units = Segmenter.segment(chapterText)
+                    val labeler = ChapterLabeler(
+                        AppConfig.ttsMimoBaseUrl,
+                        AppConfig.ttsMimoApiKey,
+                        "deepseek-v4.1-flash"
+                    )
+                    ChapterSpeaker.build(chapterText, units, labeler, roster)
+                        .getOrNull()
+                        ?.also { ChapterSpeaker.save(cacheFile, it) }
+                }
+
+                if (speaker == null || speaker.segments.isEmpty()) {
+                    // 标注失败不能让朗读停掉：退回原来的逐段模式，用户至少能听。
+                    AppLog.put("分角色标注失败，回退到逐段朗读")
+                    return@withLock
+                }
+
+                // 角色表可能新增了角色，写回书上
+                ReadBook.book?.let { book ->
+                    book.variable = RoleStore.save(book.variable, roster)
+                }
+
+                speaker.segments.forEachIndexed { index, seg ->
+                    ensureActive()
+                    if (index < nowSpeak) return@forEachIndexed
+                    val fileName = md5SpeakFileName(seg.text + seg.speakerId + seg.emotion)
+                    if (!hasSpeakFile(fileName)) {
+                        val role = roster.firstOrNull { it.id == seg.speakerId }
+                        val voice = MiMoVoices.pickFor(role ?: roster.first())
+                        val style = TtsStyle.forRole(role, seg.kind, seg.emotion)
+                        when (val r = tts.synthesize(seg.text, voice, style)) {
+                            is MiMoTtsClient.Result.Ok -> createSpeakFileBytes(fileName, r.audio)
+                            is MiMoTtsClient.Result.Err -> {
+                                AppLog.put("MiMo 合成失败：${r.message}\n${seg.text.take(30)}")
+                                createSilentSound(fileName)
+                            }
+                        }
+                    }
+                    val file = getSpeakFileAsMd5(fileName)
+                    val mediaItem = MediaItem.fromUri(Uri.fromFile(file))
+                    launch(Main) { exoPlayer.addMediaItem(mediaItem) }
+                }
+            }
+        }.onError {
+            AppLog.put("分角色朗读出错\n${it.localizedMessage}", it, true)
+        }
+    }
+
+    /** 把字节直接落成朗读缓存文件（复用原项目的目录约定）。 */
+    private fun createSpeakFileBytes(fileName: String, bytes: ByteArray) {
+        createSpeakFile(fileName).writeBytes(bytes)
     }
 
     override fun playStop() {

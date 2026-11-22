@@ -3,10 +3,12 @@ package io.legado.app.api.controller
 import android.graphics.Bitmap
 import android.graphics.drawable.Drawable
 import androidx.core.graphics.drawable.toBitmap
+import androidx.core.net.toUri
 import com.bumptech.glide.Glide
 import io.legado.app.api.ReturnData
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookProgress
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.AppWebDav
@@ -299,6 +301,142 @@ object BookController {
             }
         }
         return returnData.setData(true)
+    }
+
+    /**
+     * 上传本地书籍文件（真正的二进制上传）
+     *
+     * 旧的 `/addLocalBook` 只接受 `fileData` = **服务器本机路径**，外部客户端
+     * 根本传不了。这里直接吃 multipart 的文件字节：
+     *
+     * ```
+     * POST /uploadBook  (multipart/form-data)
+     *   file=@book.txt; filename=书名.txt
+     * ```
+     *
+     * 落盘后交给同一条导入管线，所以章节切分、编码嗅探、封面处理和 App 内
+     * 导入完全一致。
+     */
+    /**
+     * 确保有可写位置。
+     *
+     * App 内导入会先弹目录选择器，但通过 API 导入没有这个前置步骤，
+     * 于是 saveBookFile 直接抛「没有设置书籍保存位置」——外部客户端看到
+     * 这句话无从下手。API 导入自己兜底：没配置就用应用私有目录。
+     */
+    private fun ensureBookDir() {
+        if (!AppConfig.defaultBookTreeUri.isNullOrBlank()) return
+        val fallback = File(appCtx.filesDir, "books")
+        if (!fallback.exists()) fallback.mkdirs()
+        AppConfig.defaultBookTreeUri = fallback.toUri().toString()
+    }
+
+    suspend fun uploadBook(parameters: Map<String, List<String>>, files: Map<String, String>): ReturnData {
+        val returnData = ReturnData()
+        ensureBookDir()
+        val path = files["file"] ?: files["fileData"]
+            ?: return returnData.setErrorMsg("缺少 file 字段（multipart 里的文件）")
+        val fileName = parameters["fileName"]?.firstOrNull()
+            ?: files["fileName"]
+            ?: File(path).name
+            ?: return returnData.setErrorMsg("无法确定文件名")
+        return runCatching {
+            val uri = LocalBook.saveBookFile(File(path).inputStream(), fileName)
+            val book = LocalBook.importFile(uri)
+            returnData.setData(
+                mapOf(
+                    "name" to book.name,
+                    "author" to book.author,
+                    "bookUrl" to book.bookUrl,
+                    "chapterCount" to appDb.bookChapterDao.getChapterList(book.bookUrl).size
+                )
+            )
+        }.getOrElse {
+            when (it) {
+                is SecurityException -> returnData.setErrorMsg("需重新设置书籍保存位置!")
+                else -> returnData.setErrorMsg("上传导入失败\n${it.localizedMessage}")
+            }
+        }
+    }
+
+    /**
+     * 结构化导入：直接给出章节，不跑正则切分
+     *
+     * TXT 的章节切分要猜正则，排版怪的书就得反复调规则。这个接口让外部工具把
+     * 已经分好章的内容直接交进来，TOC 是既成事实：
+     *
+     * ```json
+     * {"name":"书名","author":"作者",
+     *  "chapters":[{"title":"第一章","content":"正文…"}, …]}
+     * ```
+     *
+     * 实现上是把各章按顺序拼成一个 UTF-8 txt，并按**字节区间**写 TOC。
+     * 因为本地书的正文读取就是按 start/end 字节偏移取 slice，所以导入后
+     * 与手写本地书完全等价，不需要新造一种书籍格式。
+     */
+    suspend fun importStructuredBook(postData: String?): ReturnData {
+        val returnData = ReturnData()
+        ensureBookDir()
+        val json = postData ?: return returnData.setErrorMsg("缺少请求体")
+
+        @Suppress("UNCHECKED_CAST")
+        val root = GSON.fromJsonObject<Map<String, Any?>>(json).getOrNull()
+            ?: return returnData.setErrorMsg("不是合法 JSON")
+        val name = (root["name"] as? String)?.trim().orEmpty()
+        if (name.isEmpty()) return returnData.setErrorMsg("name 不能为空")
+        val author = (root["author"] as? String)?.trim().orEmpty()
+
+        @Suppress("UNCHECKED_CAST")
+        val chapters = root["chapters"] as? List<Map<String, Any?>>
+            ?: return returnData.setErrorMsg("chapters 必须是数组")
+        if (chapters.isEmpty()) return returnData.setErrorMsg("chapters 不能为空")
+
+        return runCatching {
+            val fileName = "$name.txt"
+            // 一次性拼出整本 txt，同时记录每章的**字节**偏移。
+            // 本地书的正文读取就是按 start/end 字节切片，所以这里必须用字节，
+            // 不能用字符下标（中文一字多字节，混用会切歪正文）。
+            val body = java.io.ByteArrayOutputStream()
+            val toc = ArrayList<Pair<String, Pair<Long, Long>>>()
+            chapters.forEachIndexed { index, ch ->
+                val title = (ch["title"] as? String)?.trim().orEmpty().ifEmpty { "第 ${index + 1} 章" }
+                val text = ((ch["content"] as? String) ?: (ch["text"] as? String) ?: "").trimEnd()
+                val start = body.size().toLong()
+                body.write(title.toByteArray(Charsets.UTF_8))
+                body.write('\n'.code)
+                body.write(text.toByteArray(Charsets.UTF_8))
+                body.write("\n\n".toByteArray(Charsets.UTF_8))
+                toc += title to (start to body.size().toLong())
+            }
+
+            val uri = LocalBook.saveBookFile(body.toByteArray().inputStream(), fileName)
+            val book = LocalBook.importFile(uri)
+            book.name = name
+            book.author = author
+            appDb.bookDao.update(book)
+            val chapterList = toc.mapIndexed { index, (title, range) ->
+                BookChapter(
+                    url = title,
+                    title = title,
+                    index = index,
+                    start = range.first,
+                    end = range.second,
+                    bookUrl = book.bookUrl
+                )
+            }
+            appDb.bookChapterDao.delByBook(book.bookUrl)
+            appDb.bookChapterDao.insert(*chapterList.toTypedArray())
+            returnData.setData(
+                mapOf(
+                    "name" to book.name,
+                    "author" to book.author,
+                    "bookUrl" to book.bookUrl,
+                    "chapterCount" to chapterList.size
+                )
+            )
+        }.getOrElse {
+            returnData.setErrorMsg("结构化导入失败\n${it.localizedMessage}")
+        }
     }
 
     /**

@@ -24,6 +24,16 @@ def version = "3." + releaseTime()
 def gitCommits = Integer.parseInt('git rev-list HEAD --count'.execute().text.trim())
 
 android {
+    testOptions {
+        unitTests {
+            all {
+                systemProperty 'legado.live', System.getProperty('legado.live', '0')
+                // 探针要读真实环境变量；fork 模式下默认继承环境
+                it.environment = System.getenv()
+            }
+        }
+    }
+
     compileSdk = compile_sdk_version
     namespace = 'io.legado.app'
     kotlin {
@@ -310,3 +320,5 @@ dependencies {
     implementation(libs.soraEditor.core)
     implementation(libs.soraEditor.language.textmate)
 }
+
+

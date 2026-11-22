@@ -354,6 +354,41 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
 
     val speechRatePlay: Int get() = if (ttsFlowSys) defaultSpeechRate else ttsSpeechRate
 
+    /**
+     * 分角色朗读（MiMo）。
+     *
+     * 默认关闭：它会在朗读前额外做一次标注请求，用户不点开设置就不会花钱。
+     */
+    var ttsRoleplayEnabled: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.ttsRoleplayEnabled, false)
+        set(value) {
+            appCtx.putPrefBoolean(PreferKey.ttsRoleplayEnabled, value)
+        }
+
+    var ttsMimoBaseUrl: String
+        get() = appCtx.getPrefString(PreferKey.ttsMimoBaseUrl) ?: "https://llm.enw.cc/v1"
+        set(value) {
+            appCtx.putPrefString(PreferKey.ttsMimoBaseUrl, value)
+        }
+
+    var ttsMimoApiKey: String
+        get() = appCtx.getPrefString(PreferKey.ttsMimoApiKey) ?: ""
+        set(value) {
+            appCtx.putPrefString(PreferKey.ttsMimoApiKey, value)
+        }
+
+    var ttsMimoModel: String
+        get() = appCtx.getPrefString(PreferKey.ttsMimoModel) ?: "mimo-v2.5-tts"
+        set(value) {
+            appCtx.putPrefString(PreferKey.ttsMimoModel, value)
+        }
+
+    var ttsRoleMap: String
+        get() = appCtx.getPrefString(PreferKey.ttsRoleMap) ?: "[]"
+        set(value) {
+            appCtx.putPrefString(PreferKey.ttsRoleMap, value)
+        }
+
     var chineseConverterType: Int
         get() = appCtx.getPrefInt(PreferKey.chineseConverterType)
         set(value) {

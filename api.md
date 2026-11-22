@@ -291,3 +291,54 @@ Method = query
 URL = content://providerHost/book/cover/query?path=xxxx
 Method = query
 ```
+
+#### 上传本地书籍（二进制）
+
+旧版 `/addLocalBook` 的 `fileData` 是**服务器本机路径**，外部客户端无法使用。
+这个接口直接接收 multipart 文件字节：
+
+```
+URL = http://127.0.0.1:1234/uploadBook
+Method = POST
+Content-Type = multipart/form-data
+
+curl -F "file=@book.txt;filename=书名.txt" http://127.0.0.1:1234/uploadBook
+```
+
+返回 `{"name","author","bookUrl","chapterCount"}`。
+
+#### 结构化导入（自带目录）
+
+让外部工具直接把已分好章的内容交进来，不跑 TXT 正则切分：
+
+```
+URL = http://127.0.0.1:1234/importStructuredBook
+Method = POST
+Content-Type = text/plain
+
+{"name":"书名","author":"作者",
+ "chapters":[{"title":"第一章","content":"正文…"}, {"title":"第二章","content":"…"}]}
+```
+
+导入后与手写本地书完全等价（正文按字节偏移存 TOC），可直接朗读。
+
+#### 分角色朗读（MiMo TTS）
+
+设置 → 朗读 → **分角色朗读** 打开后，朗读前会先做一次标注：
+
+- 切句由代码完成（确定性，不花钱）；
+- 标注走 LLM，只发「编号 + 句子 + 角色表」，绝不上传整章；
+- 每句按角色选 MiMo 音色、按情绪给风格指令；
+- 整章分角色稿会缓存，重开同一章 0 token。
+
+配置项（设置里可改）：
+
+| 项 | 默认 |
+|---|---|
+| 接口地址 | `https://llm.enw.cc/v1` |
+| 语音模型 | `mimo-v2.5-tts` |
+| 标注模型 | `deepseek-v4.1-flash` |
+| 音色池 | 冰糖/茉莉/苏打/白桦/Mia/Chloe/Milo/Dean |
+
+> MiMo 的音频在 **chat completion** 里（`choices[0].message.audio.data`），
+> 不是 `/v1/audio/speech`。旧的 URL 模板式 TTS 引擎读不了这种响应。
